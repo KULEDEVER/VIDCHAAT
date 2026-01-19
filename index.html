@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<link rel="icon" href="data:,">
 <meta charset="UTF-8">
 <title>Private Video Call (Consent)</title>
 <style>
@@ -9,6 +8,7 @@
   video { width: 45%; border: 1px solid #ccc; margin: 10px; }
   button { margin: 5px; padding: 10px; font-size: 16px; }
 </style>
+<link rel="icon" href="data:,">
 </head>
 <body>
 <h1>Private Video Call App</h1>
@@ -25,6 +25,7 @@
   <button id="yesBtn">Yes</button>
   <button id="noBtn">No</button>
 </div>
+<button id="endCall">End Call</button>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-app.js";
@@ -50,28 +51,37 @@ const consentDiv = document.getElementById('consentDiv');
 const consentText = document.getElementById('consentText');
 const yesBtn = document.getElementById('yesBtn');
 const noBtn = document.getElementById('noBtn');
+const endBtn = document.getElementById('endCall');
 
 let pc;
 let localStream;
 let role = null; // "host" or "joiner"
-let joinRequestRef;
 
-// Common call references
+// Firebase paths
 const callRef = ref(db, 'privateCall');
 const offerRef = ref(db, 'privateCall/offer');
 const answerRef = ref(db, 'privateCall/answer');
 const candidatesRef = ref(db, 'privateCall/candidates');
 const requestsRef = ref(db, 'privateCall/joinRequests');
 
+// ========== Utility Functions ==========
 async function startLocalStream() {
   localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
   localVideo.srcObject = localStream;
 }
 
 function setupPeerConnection() {
-  pc = new RTCPeerConnection();
+  // STUN server added here for NAT traversal
+  pc = new RTCPeerConnection({
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" }
+    ]
+  });
+
   localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-  pc.ontrack = event => remoteVideo.srcObject = event.streams[0];
+
+  pc.ontrack = event => { remoteVideo.srcObject = event.streams[0]; };
+
   pc.onicecandidate = event => {
     if (event.candidate) {
       const candidatePushRef = push(candidatesRef);
@@ -79,7 +89,6 @@ function setupPeerConnection() {
     }
   };
 
-  // Listen for remote ICE candidates
   onValue(candidatesRef, snapshot => {
     const data = snapshot.val();
     if (!data) return;
@@ -89,7 +98,7 @@ function setupPeerConnection() {
   });
 }
 
-// ================= HOST LOGIC =================
+// ========== HOST LOGIC ==========
 document.getElementById('hostCall').onclick = async () => {
   role = "host";
   await startLocalStream();
@@ -104,16 +113,15 @@ document.getElementById('hostCall').onclick = async () => {
     consentDiv.style.display = "block";
 
     yesBtn.onclick = async () => {
-      // host consents: send yes to joiner
       await set(ref(db, `privateCall/joinRequests/${joinerId}/consent`), "yes");
       consentDiv.style.display = "none";
 
-      // Create offer for WebRTC
+      // Create offer
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await set(offerRef, JSON.stringify(offer));
 
-      // Wait for answer from joiner
+      // Listen for answer
       onValue(answerRef, async snap => {
         if (!snap.exists()) return;
         const answer = JSON.parse(snap.val());
@@ -128,7 +136,7 @@ document.getElementById('hostCall').onclick = async () => {
   });
 };
 
-// ================= JOINER LOGIC =================
+// ========== JOINER LOGIC ==========
 document.getElementById('joinCall').onclick = async () => {
   role = "joiner";
   await startLocalStream();
@@ -145,7 +153,6 @@ document.getElementById('joinCall').onclick = async () => {
       alert("Host denied your request to join.");
     }
     if (data.consent === "yes") {
-      // host consented, setup peer
       setupPeerConnection();
 
       // Get offer from host
@@ -161,7 +168,16 @@ document.getElementById('joinCall').onclick = async () => {
     }
   });
 };
+
+// ========== END CALL ==========
+endBtn.onclick = async () => {
+  if (pc) pc.close();
+  if (localStream) localStream.getTracks().forEach(track => track.stop());
+  remoteVideo.srcObject = null;
+  localVideo.srcObject = null;
+  await remove(callRef);
+  alert('Call ended');
+};
 </script>
 </body>
 </html>
-
