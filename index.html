@@ -38,7 +38,7 @@
 <script src="https://cdn.jsdelivr.net/npm/simple-peer@9.11.1/simplepeer.min.js"></script>
 
 <script>
-  // ========== Firebase Setup ==========
+  // ===== Firebase Setup =====
   const firebaseConfig = {
     apiKey: "AIzaSyCBfjR8mMsw6M0OzpllGbtZrPPVzZwu_-4",
     authDomain: "picdbdb.firebaseapp.com",
@@ -62,13 +62,14 @@
 
   let localStream;
   let peer;
-  let role = null; // "host" or "joiner"
+  let role = null; // host or joiner
+  let firebaseListenerAttached = false;
 
   // Firebase paths
   const requestsRef = db.ref('privateCall/joinRequests');
   const signalRef = db.ref('privateCall/signal');
 
-  // ---------- Helpers ----------
+  // ===== Helpers =====
   async function startLocalStream() {
     localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     localVideo.srcObject = localStream;
@@ -80,9 +81,11 @@
     localVideo.srcObject = null;
     remoteVideo.srcObject = null;
     db.ref('privateCall').remove();
+    peer = null;
+    firebaseListenerAttached = false;
   }
 
-  // ---------- HOST ----------
+  // ===== Host logic =====
   document.getElementById('hostCall').onclick = async () => {
     role = "host";
     await startLocalStream();
@@ -91,14 +94,14 @@
     requestsRef.on('value', snapshot => {
       const data = snapshot.val();
       if (!data) return;
-      const joinerId = Object.keys(data)[0]; // one request at a time
+      const joinerId = Object.keys(data)[0]; // handle one request at a time
       consentText.textContent = "Someone wants to join your call. Do you consent?";
       consentDiv.style.display = "block";
 
       yesBtn.onclick = () => {
         db.ref(`privateCall/joinRequests/${joinerId}/consent`).set("yes");
         consentDiv.style.display = "none";
-        startPeer(true); // host initiates SimplePeer
+        startPeer(true); // Host initiates SimplePeer
       };
 
       noBtn.onclick = () => {
@@ -108,7 +111,7 @@
     });
   };
 
-  // ---------- JOINER ----------
+  // ===== Joiner logic =====
   document.getElementById('joinCall').onclick = async () => {
     role = "joiner";
     await startLocalStream();
@@ -119,12 +122,17 @@
     myReqRef.on('value', snapshot => {
       const data = snapshot.val();
       if(!data) return;
-      if(data.consent === "no") alert("Host denied your request.");
-      if(data.consent === "yes") startPeer(false);
+      if(data.consent === "no") {
+        alert("Host denied your request.");
+      }
+      if(data.consent === "yes") {
+        // Only start peer after consent is yes
+        if(!peer) startPeer(false);
+      }
     });
   };
 
-  // ---------- SimplePeer Setup ----------
+  // ===== SimplePeer setup =====
   function startPeer(initiator) {
     peer = new SimplePeer({ initiator, stream: localStream, trickle: true });
 
@@ -137,17 +145,20 @@
       remoteVideo.srcObject = stream;
     });
 
-    // Listen for signals from Firebase
-    signalRef.on('value', snapshot => {
-      const signals = snapshot.val();
-      if(!signals) return;
-      Object.values(signals).forEach(s => {
-        if(s.role !== role) peer.signal(s.data);
+    // Attach Firebase listener only once
+    if(!firebaseListenerAttached) {
+      signalRef.on('value', snapshot => {
+        const signals = snapshot.val();
+        if(!signals || !peer) return;
+        Object.values(signals).forEach(s => {
+          if(s.role !== role) peer.signal(s.data);
+        });
       });
-    });
+      firebaseListenerAttached = true;
+    }
   }
 
-  // ---------- END CALL ----------
+  // ===== End Call =====
   endBtn.onclick = () => {
     cleanup();
     alert('Call ended');
