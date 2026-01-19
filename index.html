@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Private Video Call (SimplePeer)</title>
+<title>Private Video Call</title>
 <style>
   body { font-family: sans-serif; text-align: center; margin: 20px; }
   video { width: 45%; border: 1px solid #ccc; margin: 10px; }
@@ -30,126 +30,128 @@
 
 <button id="endCall">End Call</button>
 
-<script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-app.js";
-import { getDatabase, ref, set, onValue, remove, push } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-database.js";
-import SimplePeer from "https://cdn.jsdelivr.net/npm/simple-peer@9.11.1/simplepeer.min.js";
+<!-- Firebase SDKs -->
+<script src="https://www.gstatic.com/firebasejs/12.8.0/firebase-app.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.8.0/firebase-database.js"></script>
 
-const firebaseConfig = {
-  apiKey: "AIzaSyCBfjR8mMsw6M0OzpllGbtZrPPVzZwu_-4",
-  authDomain: "picdbdb.firebaseapp.com",
-  databaseURL: "https://picdbdb-default-rtdb.firebaseio.com",
-  projectId: "picdbdb",
-  storageBucket: "picdbdb.firebasestorage.app",
-  messagingSenderId: "1090760779582",
-  appId: "1:1090760779582:web:8cd9355bcba80de60e6e6f",
-  measurementId: "G-Q6N1B7H0KJ"
-};
+<!-- SimplePeer UMD -->
+<script src="https://cdn.jsdelivr.net/npm/simple-peer@9.11.1/simplepeer.min.js"></script>
 
-const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
+<script>
+  // ========== Firebase Setup ==========
+  const firebaseConfig = {
+    apiKey: "AIzaSyCBfjR8mMsw6M0OzpllGbtZrPPVzZwu_-4",
+    authDomain: "picdbdb.firebaseapp.com",
+    databaseURL: "https://picdbdb-default-rtdb.firebaseio.com",
+    projectId: "picdbdb",
+    storageBucket: "picdbdb.firebasestorage.app",
+    messagingSenderId: "1090760779582",
+    appId: "1:1090760779582:web:8cd9355bcba80de60e6e6f",
+    measurementId: "G-Q6N1B7H0KJ"
+  };
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
 
-const localVideo = document.getElementById('cam1');
-const remoteVideo = document.getElementById('cam2');
-const consentDiv = document.getElementById('consentDiv');
-const consentText = document.getElementById('consentText');
-const yesBtn = document.getElementById('yesBtn');
-const noBtn = document.getElementById('noBtn');
-const endBtn = document.getElementById('endCall');
+  const localVideo = document.getElementById('cam1');
+  const remoteVideo = document.getElementById('cam2');
+  const consentDiv = document.getElementById('consentDiv');
+  const consentText = document.getElementById('consentText');
+  const yesBtn = document.getElementById('yesBtn');
+  const noBtn = document.getElementById('noBtn');
+  const endBtn = document.getElementById('endCall');
 
-let localStream;
-let peer;
-let role = null; // "host" or "joiner"
+  let localStream;
+  let peer;
+  let role = null; // host or joiner
 
-// Firebase paths
-const requestsRef = ref(db, 'privateCall/joinRequests');
-const signalRef = ref(db, 'privateCall/signal');
+  // Firebase paths
+  const requestsRef = db.ref('privateCall/joinRequests');
+  const signalRef = db.ref('privateCall/signal');
 
-// ---------- Helpers ----------
-async function startLocalStream() {
-  localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-  localVideo.srcObject = localStream;
-}
+  // ---------- Helpers ----------
+  async function startLocalStream() {
+    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    localVideo.srcObject = localStream;
+  }
 
-function cleanup() {
-  if(peer) peer.destroy();
-  if(localStream) localStream.getTracks().forEach(t => t.stop());
-  localVideo.srcObject = null;
-  remoteVideo.srcObject = null;
-  remove(ref(db, 'privateCall'));
-}
+  function cleanup() {
+    if(peer) peer.destroy();
+    if(localStream) localStream.getTracks().forEach(t => t.stop());
+    localVideo.srcObject = null;
+    remoteVideo.srcObject = null;
+    db.ref('privateCall').remove();
+  }
 
-// ---------- HOST ----------
-document.getElementById('hostCall').onclick = async () => {
-  role = "host";
-  await startLocalStream();
+  // ---------- HOST ----------
+  document.getElementById('hostCall').onclick = async () => {
+    role = "host";
+    await startLocalStream();
 
-  // Listen for join requests
-  onValue(requestsRef, snapshot => {
-    const data = snapshot.val();
-    if (!data) return;
-    const joinerId = Object.keys(data)[0]; // one request at a time
-    consentText.textContent = "Someone wants to join your call. Do you consent?";
-    consentDiv.style.display = "block";
+    // Listen for join requests
+    requestsRef.on('value', snapshot => {
+      const data = snapshot.val();
+      if (!data) return;
+      const joinerId = Object.keys(data)[0]; // handle one request at a time
+      consentText.textContent = "Someone wants to join your call. Do you consent?";
+      consentDiv.style.display = "block";
 
-    yesBtn.onclick = () => {
-      set(ref(db, `privateCall/joinRequests/${joinerId}/consent`), "yes");
-      consentDiv.style.display = "none";
-      startPeer(true); // host initiates SimplePeer
-    };
+      yesBtn.onclick = () => {
+        db.ref(`privateCall/joinRequests/${joinerId}/consent`).set("yes");
+        consentDiv.style.display = "none";
+        startPeer(true); // host initiates SimplePeer
+      };
 
-    noBtn.onclick = () => {
-      set(ref(db, `privateCall/joinRequests/${joinerId}/consent`), "no");
-      consentDiv.style.display = "none";
-    };
-  });
-};
-
-// ---------- JOINER ----------
-document.getElementById('joinCall').onclick = async () => {
-  role = "joiner";
-  await startLocalStream();
-
-  const myReqRef = push(requestsRef);
-  await set(myReqRef, { consent: "pending" });
-
-  onValue(myReqRef, snapshot => {
-    const data = snapshot.val();
-    if(!data) return;
-    if(data.consent === "no") alert("Host denied your request.");
-    if(data.consent === "yes") startPeer(false); // joiner waits for signal
-  });
-};
-
-// ---------- SimplePeer Setup ----------
-function startPeer(initiator) {
-  peer = new SimplePeer({ initiator, stream: localStream, trickle: true });
-
-  peer.on('signal', data => {
-    const key = push(signalRef);
-    set(key, JSON.stringify({ role, data }));
-  });
-
-  peer.on('stream', stream => {
-    remoteVideo.srcObject = stream;
-  });
-
-  // Listen for signals from Firebase
-  onValue(signalRef, snapshot => {
-    const signals = snapshot.val();
-    if (!signals) return;
-    Object.values(signals).forEach(s => {
-      if(s.role !== role) peer.signal(s.data);
+      noBtn.onclick = () => {
+        db.ref(`privateCall/joinRequests/${joinerId}/consent`).set("no");
+        consentDiv.style.display = "none";
+      };
     });
-  });
-}
+  };
 
-// ---------- END CALL ----------
-endBtn.onclick = () => {
-  cleanup();
-  alert('Call ended');
-};
+  // ---------- JOINER ----------
+  document.getElementById('joinCall').onclick = async () => {
+    role = "joiner";
+    await startLocalStream();
+
+    const myReqRef = requestsRef.push();
+    myReqRef.set({ consent: "pending" });
+
+    myReqRef.on('value', snapshot => {
+      const data = snapshot.val();
+      if(!data) return;
+      if(data.consent === "no") alert("Host denied your request.");
+      if(data.consent === "yes") startPeer(false);
+    });
+  };
+
+  // ---------- SimplePeer Setup ----------
+  function startPeer(initiator) {
+    peer = new SimplePeer({ initiator, stream: localStream, trickle: true });
+
+    peer.on('signal', data => {
+      const key = signalRef.push();
+      key.set({ role, data });
+    });
+
+    peer.on('stream', stream => {
+      remoteVideo.srcObject = stream;
+    });
+
+    // Listen for signals from Firebase
+    signalRef.on('value', snapshot => {
+      const signals = snapshot.val();
+      if(!signals) return;
+      Object.values(signals).forEach(s => {
+        if(s.role !== role) peer.signal(s.data);
+      });
+    });
+  }
+
+  // ---------- END CALL ----------
+  endBtn.onclick = () => {
+    cleanup();
+    alert('Call ended');
+  };
 </script>
 </body>
 </html>
-
