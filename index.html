@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Private Video Call (Consent)</title>
+<title>Private Video Call (SimplePeer)</title>
 <style>
   body { font-family: sans-serif; text-align: center; margin: 20px; }
   video { width: 45%; border: 1px solid #ccc; margin: 10px; }
@@ -17,19 +17,23 @@
   <video id="cam1" autoplay playsinline muted></video>
   <video id="cam2" autoplay playsinline></video>
 </div>
+
 <br>
 <button id="hostCall">HOST CALL</button>
 <button id="joinCall">JOIN CALL</button>
+
 <div id="consentDiv" style="display:none;">
   <p id="consentText"></p>
   <button id="yesBtn">Yes</button>
   <button id="noBtn">No</button>
 </div>
+
 <button id="endCall">End Call</button>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-app.js";
-import { getDatabase, ref, set, get, onValue, remove, push } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-database.js";
+import { getDatabase, ref, set, onValue, remove, push } from "https://www.gstatic.com/firebasejs/12.8.0/firebase-database.js";
+import SimplePeer from "https://cdn.jsdelivr.net/npm/simple-peer@10.1.0/simplepeer.min.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCBfjR8mMsw6M0OzpllGbtZrPPVzZwu_-4",
@@ -53,129 +57,96 @@ const yesBtn = document.getElementById('yesBtn');
 const noBtn = document.getElementById('noBtn');
 const endBtn = document.getElementById('endCall');
 
-let pc;
 let localStream;
+let peer;
 let role = null; // "host" or "joiner"
 
 // Firebase paths
-const callRef = ref(db, 'privateCall');
-const offerRef = ref(db, 'privateCall/offer');
-const answerRef = ref(db, 'privateCall/answer');
-const candidatesRef = ref(db, 'privateCall/candidates');
 const requestsRef = ref(db, 'privateCall/joinRequests');
+const signalRef = ref(db, 'privateCall/signal');
 
-// ========== Utility Functions ==========
+// ---------- Helpers ----------
 async function startLocalStream() {
   localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
   localVideo.srcObject = localStream;
 }
 
-function setupPeerConnection() {
-  // STUN server added here for NAT traversal
-  pc = new RTCPeerConnection({
-    iceServers: [
-      { urls: "stun:stun.l.google.com:19302" }
-    ]
-  });
-
-  localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-
-  pc.ontrack = event => { remoteVideo.srcObject = event.streams[0]; };
-
-  pc.onicecandidate = event => {
-    if (event.candidate) {
-      const candidatePushRef = push(candidatesRef);
-      set(candidatePushRef, JSON.stringify(event.candidate));
-    }
-  };
-
-  onValue(candidatesRef, snapshot => {
-    const data = snapshot.val();
-    if (!data) return;
-    Object.values(data).forEach(async c => {
-      try { await pc.addIceCandidate(JSON.parse(c)); } catch {}
-    });
-  });
+function cleanup() {
+  if(peer) peer.destroy();
+  if(localStream) localStream.getTracks().forEach(t => t.stop());
+  localVideo.srcObject = null;
+  remoteVideo.srcObject = null;
+  remove(ref(db, 'privateCall'));
 }
 
-// ========== HOST LOGIC ==========
+// ---------- HOST ----------
 document.getElementById('hostCall').onclick = async () => {
   role = "host";
   await startLocalStream();
-  setupPeerConnection();
 
   // Listen for join requests
   onValue(requestsRef, snapshot => {
-    const request = snapshot.val();
-    if (!request) return;
-    const joinerId = Object.keys(request)[0]; // assume one request at a time
+    const data = snapshot.val();
+    if (!data) return;
+    const joinerId = Object.keys(data)[0]; // one request at a time
     consentText.textContent = "Someone wants to join your call. Do you consent?";
     consentDiv.style.display = "block";
 
-    yesBtn.onclick = async () => {
-      await set(ref(db, `privateCall/joinRequests/${joinerId}/consent`), "yes");
+    yesBtn.onclick = () => {
+      set(ref(db, `privateCall/joinRequests/${joinerId}/consent`), "yes");
       consentDiv.style.display = "none";
-
-      // Create offer
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      await set(offerRef, JSON.stringify(offer));
-
-      // Listen for answer
-      onValue(answerRef, async snap => {
-        if (!snap.exists()) return;
-        const answer = JSON.parse(snap.val());
-        if (!pc.currentRemoteDescription) await pc.setRemoteDescription(answer);
-      });
+      startPeer(true); // host initiates SimplePeer
     };
 
-    noBtn.onclick = async () => {
-      await set(ref(db, `privateCall/joinRequests/${joinerId}/consent`), "no");
+    noBtn.onclick = () => {
+      set(ref(db, `privateCall/joinRequests/${joinerId}/consent`), "no");
       consentDiv.style.display = "none";
     };
   });
 };
 
-// ========== JOINER LOGIC ==========
+// ---------- JOINER ----------
 document.getElementById('joinCall').onclick = async () => {
   role = "joiner";
   await startLocalStream();
 
-  // Send join request
-  const myRequestRef = push(requestsRef);
-  await set(myRequestRef, { consent: "pending" });
+  const myReqRef = push(requestsRef);
+  await set(myReqRef, { consent: "pending" });
 
-  // Wait for host response
-  onValue(myRequestRef, async snap => {
-    const data = snap.val();
-    if (!data) return;
-    if (data.consent === "no") {
-      alert("Host denied your request to join.");
-    }
-    if (data.consent === "yes") {
-      setupPeerConnection();
-
-      // Get offer from host
-      const offerSnap = await get(offerRef);
-      if (!offerSnap.exists()) return;
-      const offer = JSON.parse(offerSnap.val());
-      await pc.setRemoteDescription(offer);
-
-      // create answer
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      await set(answerRef, JSON.stringify(answer));
-    }
+  onValue(myReqRef, snapshot => {
+    const data = snapshot.val();
+    if(!data) return;
+    if(data.consent === "no") alert("Host denied your request.");
+    if(data.consent === "yes") startPeer(false); // joiner waits for signal
   });
 };
 
-// ========== END CALL ==========
-endBtn.onclick = async () => {
-  if (pc) pc.close();
-  if (localStream) localStream.getTracks().forEach(track => track.stop());
-  remoteVideo.srcObject = null;
-  localVideo.srcObject = null;
-  await remove(callRef);
+// ---------- SimplePeer Setup ----------
+function startPeer(initiator) {
+  peer = new SimplePeer({ initiator, stream: localStream, trickle: true });
+
+  peer.on('signal', data => {
+    const key = push(signalRef);
+    set(key, JSON.stringify({ role, data }));
+  });
+
+  peer.on('stream', stream => {
+    remoteVideo.srcObject = stream;
+  });
+
+  // Listen for signals from Firebase
+  onValue(signalRef, snapshot => {
+    const signals = snapshot.val();
+    if (!signals) return;
+    Object.values(signals).forEach(s => {
+      if(s.role !== role) peer.signal(s.data);
+    });
+  });
+}
+
+// ---------- END CALL ----------
+endBtn.onclick = () => {
+  cleanup();
   alert('Call ended');
 };
 </script>
