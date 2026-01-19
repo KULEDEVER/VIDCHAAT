@@ -30,9 +30,9 @@
 
 <button id="endCall">End Call</button>
 
-<!-- Firebase SDKs -->
-<script src="https://www.gstatic.com/firebasejs/12.8.0/firebase-app.js"></script>
-<script src="https://www.gstatic.com/firebasejs/12.8.0/firebase-database.js"></script>
+<!-- Firebase UMD (compat) -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 
 <!-- SimplePeer UMD -->
 <script src="https://cdn.jsdelivr.net/npm/simple-peer@9.11.1/simplepeer.min.js"></script>
@@ -62,7 +62,7 @@
 
   let localStream;
   let peer;
-  let role = null; // host or joiner
+  let role = null; // "host" or "joiner"
 
   // Firebase paths
   const requestsRef = db.ref('privateCall/joinRequests');
@@ -91,7 +91,7 @@
     requestsRef.on('value', snapshot => {
       const data = snapshot.val();
       if (!data) return;
-      const joinerId = Object.keys(data)[0]; // handle one request at a time
+      const joinerId = Object.keys(data)[0]; // one request at a time
       consentText.textContent = "Someone wants to join your call. Do you consent?";
       consentDiv.style.display = "block";
 
